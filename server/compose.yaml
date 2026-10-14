@@ -1,0 +1,35 @@
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      SETUP_SECRET: ${SETUP_SECRET:?Set SETUP_SECRET in .env}
+    volumes:
+      - care_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 128
+    cpus: 1.0
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      SERVER_ADDRESS: ${SERVER_ADDRESS:?Set SERVER_ADDRESS in .env}
+    ports:
+      - "${LISTEN_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [relay]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 64
+volumes:
+  care_data:
+  caddy_data:
+  caddy_config:

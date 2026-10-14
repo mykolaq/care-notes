@@ -1,0 +1,1 @@
+Offline OCR: Tesseract4Android 4.9.0, Tesseract and Leptonica. Russian and English models: tesseract-ocr/tessdata_fast. See bundled licenses and https://github.com/adaptech-cz/Tesseract4Android for dependencies and their licenses.

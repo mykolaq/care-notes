@@ -1,0 +1,9 @@
+{
+    auto_https disable_redirects
+    default_sni {$SERVER_ADDRESS}
+    skip_install_trust
+}
+https://{$SERVER_ADDRESS} {
+    tls internal
+    reverse_proxy relay:8080
+}
