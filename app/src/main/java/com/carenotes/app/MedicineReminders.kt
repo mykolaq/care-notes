@@ -27,7 +27,7 @@ object MedicineReminders {
             }
         }
     }
-    fun restore(context: Context) { val store = Store(context); val settings = store.medicineSettings(); store.prescriptions().forEach { cancel(context, it, false); schedule(context, it, settings) } }
+    fun restore(context: Context) { val store = Store(context); val settings = store.medicineSettings(); store.prescriptions().forEach { cancel(context, it, false); schedule(context, it, settings) }; BreakfastReminders.restore(context) }
 }
 class MedicineReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

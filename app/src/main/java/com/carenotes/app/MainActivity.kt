@@ -58,10 +58,11 @@ class MainActivity : ComponentActivity() {
     private var unlocked by mutableStateOf(false)
     private var openedOnce by mutableStateOf(false)
     private var openedMedicine by mutableStateOf<String?>(null)
+    private var openedBreakfast by mutableStateOf(false)
     private var openedVisit by mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        openedMedicine = intent.getStringExtra("medicineId"); openedVisit = intent.getStringExtra("visitId")
+        openedMedicine = intent.getStringExtra("medicineId"); openedVisit = intent.getStringExtra("visitId"); openedBreakfast = intent.getBooleanExtra("breakfast", false)
         Reminders.channel(this)
         FamilySync.schedule(this)
         unlocked = !AppLock(this).enabled
@@ -72,7 +73,7 @@ class MainActivity : ComponentActivity() {
                 val compact = maxWidth < 380.dp
                 CompositionLocalProvider(LocalCompact provides compact, LocalContentPadding provides if (compact) 16.dp else 20.dp) {
                     MaterialTheme(colorScheme = lightColorScheme(primary = Green, secondaryContainer = Lavender, background = Paper, surface = Color.White, onSurface = Color(0xFF202A23)), typography = Typography(bodyLarge = androidx.compose.ui.text.TextStyle(fontSize = 17.sp, lineHeight = 25.sp), bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, lineHeight = 22.sp), titleLarge = androidx.compose.ui.text.TextStyle(fontSize = if (compact) 20.sp else 22.sp, lineHeight = if (compact) 26.sp else 28.sp, fontWeight = FontWeight.SemiBold))) {
-                        if (openedOnce) CompositionLocalProvider(LocalUnlocked provides unlocked) { CareApp(this@MainActivity, if (unlocked) openedVisit else null, if (unlocked) openedMedicine else null) { openedVisit = null; openedMedicine = null } }
+                        if (openedOnce) CompositionLocalProvider(LocalUnlocked provides unlocked) { CareApp(this@MainActivity, if (unlocked) openedVisit else null, if (unlocked) openedMedicine else null, unlocked && openedBreakfast) { openedVisit = null; openedMedicine = null; openedBreakfast = false } }
                         if (!unlocked) {
                             Dialog(onDismissRequest = {}, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false, securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn)) {
                                 UnlockScreen(this@MainActivity) { openedOnce = true; unlocked = true }
@@ -94,11 +95,11 @@ class MainActivity : ComponentActivity() {
         if (AppLock(this).enabled) unlocked = false
         super.onStop()
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openedMedicine = intent.getStringExtra("medicineId"); openedVisit = intent.getStringExtra("visitId") }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openedMedicine = intent.getStringExtra("medicineId"); openedVisit = intent.getStringExtra("visitId"); openedBreakfast = intent.getBooleanExtra("breakfast", false) }
 }
 
 @Composable
-private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine: String?, consumed: () -> Unit) {
+private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine: String?, openedBreakfast: Boolean, consumed: () -> Unit) {
     val store = remember { Store(activity) }
     var prescriptions by remember { mutableStateOf(store.prescriptions()) }
     var visits by remember { mutableStateOf(store.visits()) }
@@ -108,8 +109,10 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
     var securityVisible by remember { mutableStateOf(false) }
     var settingsVisible by remember { mutableStateOf(false) }
     var showMedicines by remember { mutableStateOf(true) }
-    fun saveMedicines(next: List<Prescription>) { prescriptions = next; store.savePrescriptions(next) }
+    fun saveMedicines(next: List<Prescription>) { prescriptions = next; store.savePrescriptions(next); BreakfastReminders.restore(activity) }
     var tab by remember { mutableIntStateOf(0) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(openedBreakfast) { if (openedBreakfast) { tab = 0; listState.scrollToItem(0) } }
     var medicineForm by remember { mutableStateOf(false) }
     var medicineEdit by remember { mutableStateOf<Prescription?>(null) }
     var visitForm by remember { mutableStateOf(false) }
@@ -156,7 +159,7 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
         if (canEdit) ExtendedFloatingActionButton(onClick = { if (tab == 0) { medicineEdit = null; medicineForm = true } else { visitEdit = null; visitForm = true } }, containerColor = Green, contentColor = Color.White, icon = { Icon(Icons.Outlined.Add, null) }, text = { Text(if (tab == 0) "Назначение" else "Посещение", fontSize = 16.sp) })
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
-            LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(start = LocalContentPadding.current, end = LocalContentPadding.current, top = 16.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), state = listState, contentPadding = PaddingValues(start = LocalContentPadding.current, end = LocalContentPadding.current, top = 16.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("МОЁ ЗДОРОВЬЕ", color = Green, fontSize = 12.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -171,6 +174,7 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
                 if (!notificationsEnabled && tab == 0) item { Notice("Напоминания выключены", "Разрешите уведомления о приёме лекарств.", "Включить") { if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) permission.launch(Manifest.permission.POST_NOTIFICATIONS) else openIntent(activity, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)) } }
                 if (!exactEnabled && tab == 0) item { Notice("Время напоминаний", "Разрешите точные напоминания в настройках Android.", "Настроить") { openIntent(activity, Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${activity.packageName}"))) } }
                 if (tab == 0) {
+                    item { BreakfastEntry(activity, prescriptions, openedBreakfast, consumed) }
                     item { OutlinedButton(onClick = { instructionsVisible = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Description, null); Spacer(Modifier.width(8.dp)); Text("Инструкции к моим лекарствам") } }
                     item { OutlinedButton(onClick = { settingsVisible = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Schedule, null); Spacer(Modifier.width(8.dp)); Text("Время и напоминания", modifier = Modifier.weight(1f), textAlign = TextAlign.Center) } }
                     item {
@@ -199,7 +203,8 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
                                 Text("Назначено: ${p.prescribedOn?.format(dateFormat) ?: "дата не указана"}", fontSize = 15.sp)
                                 Text("Начало: ${p.startOn?.format(dateFormat) ?: "не указано"}${p.courseDays?.let { " · $it дн., до ${p.endOn()?.format(dateFormat)}" } ?: ""}", fontSize = 15.sp)
                                 if (p.periods.isNotEmpty()) Text("${p.regimenLabel()} · ${p.periods.sorted().joinToString { "${periodNames[it]} ${medicineSettings.times[it].format(timeFormat)}" }}", color = Green)
-                                if (p.periods.isNotEmpty() && p.startOn != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                if (p.breakfastStage.isNotEmpty()) Text("${p.regimenLabel()} · ${p.breakfastLabel()} · ${p.breakfastMinutes} мин.", color = Green)
+                                if ((p.periods.isNotEmpty() || p.breakfastStage.isNotEmpty()) && p.startOn != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                     Text(if (medicineSettings.enabled) "Напоминать о применении" else "Все напоминания о лекарствах выключены", Modifier.weight(1f), fontSize = 15.sp)
                                     Switch(checked = p.remindersEnabled, onCheckedChange = { enabled -> val next = p.copy(remindersEnabled = enabled); MedicineReminders.cancel(activity, p); saveMedicines(prescriptions.map { if (it.id == p.id) next else it }); MedicineReminders.schedule(activity, next); if (enabled && !notificationsEnabled) permission.launch(Manifest.permission.POST_NOTIFICATIONS) })
                                 }
@@ -239,7 +244,18 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
                     if (tab == 2 && showMedicines) {
                         item { Text("● Приём лекарств", color = Color(0xFF67537B), fontWeight = FontWeight.Bold, fontSize = 19.sp) }
                         val doses = prescriptions.filter { it.isDoseDay(selectedDate) }.flatMap { p -> p.periods.map { slot -> p to slot } }.sortedBy { medicineSettings.times[it.second] }
-                        if (doses.isEmpty()) item { Text("Приём лекарств не запланирован", color = Color(0xFF68736A)) }
+                        val morningDoses = prescriptions.filter { it.breakfastStage in breakfastStages && it.isDoseDay(selectedDate) }
+                        items(morningDoses, key = { "breakfast:${it.id}" }) { p ->
+                            Card(colors = CardDefaults.cardColors(containerColor = Lavender), modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("Моё утро · ${p.breakfastLabel()}", fontWeight = FontWeight.Bold)
+                                    Text(p.name, style = MaterialTheme.typography.titleLarge)
+                                    if (p.dose.isNotBlank()) Text(p.dose)
+                                    Text("Время зависит от пробуждения и еды", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (doses.isEmpty() && morningDoses.isEmpty()) item { Text("Приём лекарств не запланирован", color = Color(0xFF68736A)) }
                         items(doses, key = { "dose:${it.first.id}:${it.second}" }) { (p, slot) ->
                             Card(onClick = { if (canEdit) { medicineEdit = p; medicineForm = true } }, colors = CardDefaults.cardColors(containerColor = Lavender), shape = RoundedCornerShape(22.dp)) {
                                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -342,7 +358,7 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
                             Text("$number", color = if (chosen) Color.White else Color(0xFF202A23), fontSize = if (LocalCompact.current) 16.sp else 18.sp, maxLines = 1)
                             Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(if (visits.any { it.dateTime.toLocalDate() == date }) "●" else " ", fontSize = 10.sp, color = if (chosen) Color.White else Green)
-                                Text(if (prescriptions.any { it.periods.isNotEmpty() && it.isDoseDay(date) }) "●" else " ", fontSize = 10.sp, color = if (chosen) Color(0xFFE1BEFF) else Color(0xFF816496))
+                                Text(if (prescriptions.any { (it.periods.isNotEmpty() || it.breakfastStage.isNotEmpty()) && it.isDoseDay(date) }) "●" else " ", fontSize = 10.sp, color = if (chosen) Color(0xFFE1BEFF) else Color(0xFF816496))
                             }
                         }
                     }
@@ -429,6 +445,8 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
     var weekdays by remember { mutableStateOf(existing?.weekdays ?: emptyList()) }
     var periods by remember { mutableStateOf(existing?.periods ?: emptyList()) }
     var enabled by remember { mutableStateOf(existing?.remindersEnabled ?: false) }
+    var breakfastStage by remember { mutableStateOf(existing?.breakfastStage ?: "") }
+    var breakfastMinutes by remember { mutableStateOf((existing?.breakfastMinutes ?: 30).toString()) }
     FormDialog(if (existing == null) "Новое назначение" else "Изменить назначение", { cancel() }) {
         Field("Лекарство / средство\u00a0*", name, { name = it; inn = inn.forName(it) })
         Field("МНН — действующее вещество", inn.value, { inn = inn.edited(it.take(500)) }, false)
@@ -457,19 +475,28 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
         listOf("Каждый день", "Через день", "Каждые N дней", "Дни недели").forEachIndexed { i, label -> Row(Modifier.fillMaxWidth().clickable { kind = i }, verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = kind == i, onClick = { kind = i }); Text(label) } }
         if (kind == 2) Field("Раз в сколько дней", interval, { interval = it.filter(Char::isDigit).take(3) })
         if (kind == 3) listOf("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье").forEachIndexed { i, label -> CheckRow(label, i + 1 in weekdays) { weekdays = if (it) (weekdays + (i + 1)).distinct() else weekdays - (i + 1) } }
-        Text("Время суток", fontWeight = FontWeight.Bold, fontSize = 19.sp)
-        periodNames.forEachIndexed { i, label -> CheckRow("$label · ${settings.times[i].format(timeFormat)}", i in periods) { periods = if (it) (periods + i).distinct() else periods - i } }
-        Text("Часы меняются в разделе «Время и напоминания».", fontSize = 14.sp)
+        Text("Когда применять", fontWeight = FontWeight.Bold, fontSize = 19.sp)
+        ChoiceField("Отсчёт времени", if (breakfastStage.isEmpty()) "По часам" else "От пробуждения и завтрака", listOf("По часам", "От пробуждения и завтрака"), allowEmpty = false) { breakfastStage = if (it == "По часам") "" else "wake" }
+        if (breakfastStage.isEmpty()) {
+            periodNames.forEachIndexed { i, label -> CheckRow("$label · ${settings.times[i].format(timeFormat)}", i in periods) { periods = if (it) (periods + i).distinct() else periods - i } }
+            Text("Часы меняются в разделе «Время и напоминания».", fontSize = 14.sp)
+        } else {
+            ChoiceField("Этап утра", breakfastLabels[breakfastStages.indexOf(breakfastStage)], breakfastLabels, allowEmpty = false) { breakfastStage = breakfastStages[breakfastLabels.indexOf(it)] }
+            if (breakfastStage != "with") Field(when (breakfastStage) { "wake" -> "После приёма до еды: минимум минут"; "before" -> "За сколько минут до завтрака"; else -> "Через сколько минут после окончания еды" }, breakfastMinutes, { breakfastMinutes = it.filter(Char::isDigit).take(4) })
+            Text("Укажите интервал из назначения врача. Утро запускается кнопкой «Я проснулся», затем вы подтверждаете приём и начало/окончание еды. Для дополнительного приёма этого лекарства создайте отдельное назначение.", style = MaterialTheme.typography.bodySmall)
+        }
         CheckRow("Напоминать о применении", enabled) { enabled = it }
         Field("Как применять / указания врача", schedule, { schedule = it }, false); Field("Назначивший врач", doctor, { doctor = it }); Field("Примечания", notes, { notes = it }, false)
         val validScheme = kind != 3 || weekdays.isNotEmpty()
         val validInterval = kind != 2 || (interval.toIntOrNull() ?: 0) > 0
         val validDays = days.isBlank() || (duration ?: 0) > 0
-        val validReminders = !enabled || (start != null && periods.isNotEmpty())
-        if (!validReminders) Text("Для напоминаний выберите дату начала и время суток.", color = MaterialTheme.colorScheme.error)
+        val validBreakfast = breakfastStage.isEmpty() || (start != null && (breakfastStage == "with" || breakfastMinutes.toIntOrNull()?.let { it in 0..1440 } == true))
+        val validReminders = !enabled || (start != null && (periods.isNotEmpty() || breakfastStage.isNotEmpty()))
+        if (!validBreakfast) Text("Для утреннего режима нужны дата начала и интервал от 0 до 1440 минут.", color = MaterialTheme.colorScheme.error)
+        if (!validReminders) Text("Для напоминаний выберите дату начала и время приёма.", color = MaterialTheme.colorScheme.error)
         if (!validDays) Text("Количество дней должно быть больше нуля.", color = MaterialTheme.colorScheme.error)
         if (!validScheme || !validInterval) Text("Укажите интервал или дни недели.", color = MaterialTheme.colorScheme.error)
-        Button(onClick = { photoCommitted = true; save(Prescription(existing?.id ?: java.util.UUID.randomUUID().toString(), name.trim(), dose.trim(), schedule.trim(), doctor.trim(), notes.trim(), prescribed, start, duration, when (kind) { 0 -> 1; 1 -> 2; else -> interval.toIntOrNull() ?: 1 }, if (kind == 3) weekdays else emptyList(), periods.sorted(), enabled, application, meal, inn.value.trim(), photo)) }, enabled = !photoBusy && name.isNotBlank() && validScheme && validInterval && validDays && validReminders, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Сохранить", fontSize = 18.sp) }
+        Button(onClick = { photoCommitted = true; save(Prescription(existing?.id ?: java.util.UUID.randomUUID().toString(), name.trim(), dose.trim(), schedule.trim(), doctor.trim(), notes.trim(), prescribed, start, duration, when (kind) { 0 -> 1; 1 -> 2; else -> interval.toIntOrNull() ?: 1 }, if (kind == 3) weekdays else emptyList(), if (breakfastStage.isEmpty()) periods.sorted() else emptyList(), enabled, application, meal, inn.value.trim(), photo, breakfastStage, if (breakfastStage == "with" || breakfastStage.isEmpty()) 0 else breakfastMinutes.toIntOrNull() ?: 0)) }, enabled = !photoBusy && name.isNotBlank() && validScheme && validInterval && validDays && validReminders && validBreakfast, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Сохранить", fontSize = 18.sp) }
         TextButton(onClick = { cancel() }, enabled = !photoBusy, modifier = Modifier.fillMaxWidth()) { Text("Отмена") }
     }
 }

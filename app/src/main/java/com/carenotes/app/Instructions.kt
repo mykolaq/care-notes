@@ -14,6 +14,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -25,6 +32,7 @@ import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -85,12 +93,12 @@ internal class Instructions(private val context: Context) {
     }
 }
 
-@Composable internal fun ChoiceField(label: String, value: String, options: List<String>, change: (String) -> Unit) {
+@Composable internal fun ChoiceField(label: String, value: String, options: List<String>, allowEmpty: Boolean = true, change: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("$label: ${value.ifBlank { "не указан" }}") }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            (listOf("") + options).forEach { option -> DropdownMenuItem(text = { Text(option.ifBlank { "Не указан" }) }, onClick = { change(option); expanded = false }) }
+            ((if (allowEmpty) listOf("") else emptyList()) + options).forEach { option -> DropdownMenuItem(text = { Text(option.ifBlank { "Не указан" }) }, onClick = { change(option); expanded = false }) }
         }
     }
 }
@@ -199,73 +207,215 @@ internal class Instructions(private val context: Context) {
 
 @Composable private fun InstructionReader(file: File, name: String, dismiss: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var page by remember { mutableIntStateOf(0) }; var count by remember { mutableIntStateOf(0) }
-    var zoom by remember { mutableIntStateOf(100) }; var textMode by remember { mutableStateOf(false) }
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }; var text by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(true) }; var error by remember { mutableStateOf("") }
-    LaunchedEffect(file, page, textMode) {
-        busy = true; error = ""; text = ""; bitmap = null
+    val prefs = remember { context.getSharedPreferences("instruction_reader", Context.MODE_PRIVATE) }
+    val positionKey = remember(file) { file.nameWithoutExtension }
+    var zoom by androidx.compose.runtime.saveable.rememberSaveable(file.path) { mutableIntStateOf(100) }
+    var textMode by androidx.compose.runtime.saveable.rememberSaveable(file.path) { mutableStateOf(prefs.getBoolean("textMode", false)) }
+    var sizes by remember(file) { mutableStateOf<List<Float>>(emptyList()) }
+    var error by remember(file) { mutableStateOf("") }
+    var retry by remember { mutableIntStateOf(0) }
+    val scroll = androidx.compose.foundation.lazy.rememberLazyListState(prefs.getInt(positionKey, 0))
+    val scope = rememberCoroutineScope()
+    var pages by remember(file) { mutableStateOf<List<String>?>(null) }
+    val ocr = remember(file) { InstructionOcr(context, file) }
+    var ocrPages by remember(file) { mutableStateOf(emptySet<Int>()) }
+    var ocrJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var ocrProgress by remember { mutableStateOf("") }
+    var ocrError by remember { mutableStateOf("") }
+    var textError by remember(file) { mutableStateOf(false) }
+    var searching by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var sectionsOpen by remember { mutableStateOf(false) }
+    var matchIndex by remember { mutableIntStateOf(0) }
+    var pendingJump by remember { mutableStateOf<InstructionLocation?>(null) }
+    val matches = remember(pages, query) { instructionMatches(pages.orEmpty(), query) }
+    val sections = remember(pages) { instructionSections(pages.orEmpty()) }
+    fun jump(location: InstructionLocation) {
+        textMode = true
+        prefs.edit().putBoolean("textMode", true).apply()
+        pendingJump = location
+        scope.launch { scroll.scrollToItem(location.page) }
+    }
+    LaunchedEffect(query, pages) {
+        matchIndex = 0
+        matches.firstOrNull()?.let { jump(it) }
+    }
+    LaunchedEffect(file, retry) {
+        pages = null; textError = false
         try {
-            if (textMode) {
-                val result = withContext(Dispatchers.IO) {
-                    com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
-                    com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { document ->
-                        val stripper = com.tom_roush.pdfbox.text.PDFTextStripper().apply {
-                            startPage = page + 1; endPage = page + 1
-                            lineSeparator = " "; paragraphStart = ""; paragraphEnd = "\n\n"
-                        }
-                        stripper.getText(document).trim() to document.numberOfPages
+            pages = withContext(Dispatchers.IO) {
+                com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
+                val cached = ocr.read()
+                withContext(Dispatchers.Main) { ocrPages = cached.keys }
+                com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { document ->
+                    (0 until document.numberOfPages).map { page ->
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        cached[page] ?: com.tom_roush.pdfbox.text.PDFTextStripper().apply { startPage = page + 1; endPage = page + 1; lineSeparator = " "; paragraphStart = ""; paragraphEnd = "\n\n" }.getText(document).trim()
                     }
                 }
-                text = result.first; count = result.second
-            } else {
-                val result = withContext(Dispatchers.IO) { ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd -> PdfRenderer(fd).use { renderer -> renderer.openPage(page).use { p -> val width = 1600; val b = Bitmap.createBitmap(width, (width.toFloat() * p.height / p.width).toInt().coerceIn(1, 5000), Bitmap.Config.ARGB_8888); b.eraseColor(android.graphics.Color.WHITE); p.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); b to renderer.pageCount } } } }
-                bitmap = result.first; count = result.second
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (_: Exception) { error = if (textMode) "Не удалось извлечь текст. Откройте режим PDF." else "Не удалось открыть PDF. Сохраните инструкцию ещё раз." }
-        finally { busy = false }
+        catch (_: Exception) { textError = true }
+    }
+    LaunchedEffect(file, retry) {
+        error = ""
+        try {
+            sizes = withContext(Dispatchers.IO) {
+                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                    PdfRenderer(fd).use { renderer -> (0 until renderer.pageCount).map { i -> renderer.openPage(i).use { it.height.toFloat() / it.width } } }
+                }
+            }
+            if (scroll.firstVisibleItemIndex >= sizes.size) scroll.scrollToItem(0)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { error = "Не удалось открыть PDF. Попробуйте сохранить инструкцию заново." }
+    }
+    LaunchedEffect(scroll, sizes) {
+        snapshotFlow { scroll.firstVisibleItemIndex }.collect { page -> if (sizes.isNotEmpty()) prefs.edit().putInt(positionKey, page).apply() }
     }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().safeDrawingPadding()) {
             Column {
-                Text(name, Modifier.padding(12.dp), style = MaterialTheme.typography.titleMedium)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    TextButton(onClick = { page-- }, enabled = page > 0 && !busy) { Text("Назад") }
-                    Text(if (count > 0) "${page + 1} / $count" else "…", Modifier.padding(top = 12.dp))
-                    TextButton(onClick = { page++ }, enabled = page + 1 < count && !busy) { Text("Далее") }
-                    TextButton(onClick = dismiss) { Text("Закрыть") }
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text(name, Modifier.weight(1f), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                    IconButton(onClick = { searching = !searching; if (!searching) query = "" }) { Icon(androidx.compose.material.icons.Icons.Outlined.Search, "Поиск по инструкции") }
+                    IconButton(onClick = { sectionsOpen = true }) { Icon(androidx.compose.material.icons.Icons.AutoMirrored.Outlined.List, "Разделы инструкции") }
+                    IconButton(onClick = dismiss) { Icon(androidx.compose.material.icons.Icons.Outlined.Close, "Закрыть инструкцию") }
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !textMode, onClick = { textMode = false }, label = { Text("PDF") })
-                    FilterChip(selected = textMode, onClick = { textMode = true }, label = { Text("Текст с переносами") })
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    TextButton(onClick = { zoom = (zoom - 10).coerceAtLeast(100) }, enabled = zoom > 100) { Text("−") }
-                    Text("Масштаб $zoom%", Modifier.padding(top = 12.dp))
-                    TextButton(onClick = { zoom = (zoom + 10).coerceAtMost(300) }, enabled = zoom < 300) { Text("+") }
-                }
-                if (textMode) Text("В текстовом режиме таблицы могут потерять расположение. Сверяйте их с PDF.", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall)
-                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (error.isNotBlank()) Text(error, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error)
-                if (textMode) {
-                    val scroll = rememberScrollState()
-                    LaunchedEffect(page, textMode) { scroll.scrollTo(0) }
-                    Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll).padding(16.dp)) {
-                        if (!busy && text.isBlank() && error.isBlank()) Text("На этой странице нет извлекаемого текста. Используйте режим PDF.")
-                        if (text.isNotBlank()) Text(text, fontSize = (18f * zoom / 100).sp, lineHeight = (27f * zoom / 100).sp)
+                if (searching) {
+                    OutlinedTextField(query, { query = it }, label = { Text("Найти слово или фразу") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
+                    Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(when {
+                            pages == null && !textError -> "Подготавливаю поиск…"
+                            textError -> "Не удалось извлечь текст"
+                            pages.orEmpty().all { it.isBlank() } -> "В PDF нет текста для поиска"
+                            query.trim().length < 2 -> "Введите хотя бы 2 символа"
+                            matches.isEmpty() -> "Совпадений нет"
+                            else -> "${matchIndex + 1} из ${matches.size}${if (matches.size == 2000) "+" else ""}"
+                        }, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        IconButton(onClick = { matchIndex = (matchIndex - 1 + matches.size) % matches.size; jump(matches[matchIndex]) }, enabled = matches.isNotEmpty()) { Icon(androidx.compose.material.icons.Icons.Outlined.KeyboardArrowUp, "Предыдущее совпадение") }
+                        IconButton(onClick = { matchIndex = (matchIndex + 1) % matches.size; jump(matches[matchIndex]) }, enabled = matches.isNotEmpty()) { Icon(androidx.compose.material.icons.Icons.Outlined.KeyboardArrowDown, "Следующее совпадение") }
                     }
-                } else {
-                    val vertical = rememberScrollState(); val horizontal = rememberScrollState()
-                    LaunchedEffect(page, textMode) { vertical.scrollTo(0); horizontal.scrollTo(0) }
-                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                        val width = maxWidth * (zoom / 100f)
-                        Box(Modifier.fillMaxSize().verticalScroll(vertical).horizontalScroll(horizontal)) {
-                            bitmap?.let { b -> Image(b.asImageBitmap(), "Страница ${page + 1}", Modifier.width(width).height(width * b.height.toFloat() / b.width)) }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !textMode, onClick = { textMode = false; prefs.edit().putBoolean("textMode", false).apply() }, label = { Text("PDF") })
+                    FilterChip(selected = textMode, onClick = { textMode = true; prefs.edit().putBoolean("textMode", true).apply() }, label = { Text("Текст с переносами") })
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    IconButton(onClick = { zoom = (zoom - 10).coerceAtLeast(100) }, enabled = zoom > 100) { Icon(androidx.compose.material.icons.Icons.Outlined.Remove, "Уменьшить масштаб") }
+                    Text("$zoom%", Modifier.widthIn(min = 64.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    IconButton(onClick = { zoom = (zoom + 10).coerceAtMost(300) }, enabled = zoom < 300) { Icon(androidx.compose.material.icons.Icons.Outlined.Add, "Увеличить масштаб") }
+                    TextButton(onClick = { scope.launch { scroll.animateScrollToItem(0) } }, enabled = scroll.firstVisibleItemIndex > 0) { Text("В начало") }
+                }
+                if (textMode) Text("Текст можно выделить и скопировать. Таблицы сверяйте с PDF.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
+                val unreadable = pages.orEmpty().indices.filter { it !in ocrPages && instructionNeedsOcr(pages!![it]) }
+                if (unreadable.isNotEmpty() || ocrJob != null || ocrError.isNotBlank()) Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                    if (ocrJob != null) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Text(ocrProgress, style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { ocrJob?.cancel() }) { Text("Остановить распознавание") }
+                    } else if (unreadable.isNotEmpty()) {
+                        Text("На ${unreadable.size} стр. мало текста для поиска. Можно распознать сканы на телефоне без интернета.", style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = {
+                            ocrError = ""; ocrProgress = "Подготавливаю распознавание…"
+                            ocrJob = scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        ocr.recognize(unreadable) { index, text -> withContext(Dispatchers.Main) {
+                                            if (text == null) ocrProgress = "Распознаю ${unreadable.indexOf(index) + 1} из ${unreadable.size} · страница ${index + 1}"
+                                            else {
+                                                pages = pages!!.toMutableList().also { it[index] = text }
+                                                ocrPages = ocrPages + index
+                                            }
+                                        } }
+                                    }
+                                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                                catch (_: Exception) { ocrError = "Не удалось распознать. Можно повторить или читать оригинальный PDF." }
+                                finally { ocrJob = null }
+                            }
+                        }) { Text("Распознать для поиска") }
+                    }
+                    if (ocrError.isNotBlank()) Text(ocrError, color = MaterialTheme.colorScheme.error)
+                }
+                if (ocrPages.isNotEmpty()) Text("Текст распознан из изображения (${ocrPages.size} стр.). Возможны ошибки — сверяйте названия и дозировки с оригиналом PDF.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
+                if (error.isNotBlank()) { Text(error, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error); TextButton(onClick = { retry++ }) { Text("Повторить") } }
+                else if (sizes.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    val viewportWidth = maxWidth
+                    val horizontal = rememberScrollState()
+                    // Only horizontal scrolling surrounds the lazy list; its vertical size stays bounded.
+                    Box(if (textMode) Modifier.fillMaxSize() else Modifier.fillMaxSize().horizontalScroll(horizontal)) {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            state = scroll,
+                            modifier = Modifier.width(if (textMode) viewportWidth else viewportWidth * (zoom / 100f)).fillMaxHeight(),
+                            contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(sizes.size, key = { it }) { page ->
+                                InstructionPage(file, page, sizes[page], textMode, zoom, pages?.getOrNull(page), textError, matches.filter { it.page == page }, pendingJump?.takeIf { it.page == page }) { offset ->
+                                    pendingJump = null
+                                    scope.launch { scroll.scrollToItem(page, offset) }
+                                }
+                            }
                         }
                     }
                 }
+                if (sizes.isNotEmpty()) Text("Страница ${minOf(scroll.firstVisibleItemIndex + 1, sizes.size)} из ${sizes.size} · листайте вниз", Modifier.fillMaxWidth().padding(8.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+    if (sectionsOpen) FormDialog("Разделы инструкции", { sectionsOpen = false }) {
+        Text("Разделы найдены по заголовкам в документе. Нажмите, чтобы перейти к тексту.")
+        when {
+            pages == null && !textError -> { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Собираю оглавление…") }
+            textError -> Text("Не удалось прочитать текст. Можно продолжить просмотр PDF.")
+            sections.isEmpty() -> Text("Заголовки не найдены. Попробуйте поиск по слову. Для скана сначала нажмите «Распознать для поиска» в читалке.")
+            else -> sections.forEach { section -> TextButton(onClick = { sectionsOpen = false; jump(section.location) }, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth()) { Text(section.title); Text("Страница ${section.location.page + 1}", style = MaterialTheme.typography.bodySmall) }
+            } }
+        }
+        TextButton(onClick = { sectionsOpen = false }) { Text("Закрыть") }
+    }
+}
+
+@Composable private fun InstructionPage(file: File, page: Int, aspect: Float, textMode: Boolean, zoom: Int, text: String?, textError: Boolean, matches: List<InstructionLocation>, jump: InstructionLocation?, positioned: (Int) -> Unit) {
+    var bitmap by remember(file, page) { mutableStateOf<Bitmap?>(null) }
+    var error by remember(file, page, textMode) { mutableStateOf("") }
+    var retry by remember { mutableIntStateOf(0) }
+    LaunchedEffect(file, page, textMode, retry) {
+        error = ""
+        try {
+            if (!textMode && bitmap == null) bitmap = withContext(Dispatchers.IO) {
+                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd -> PdfRenderer(fd).use { renderer -> renderer.openPage(page).use { p ->
+                    val width = 1600
+                    Bitmap.createBitmap(width, (width * aspect).toInt().coerceIn(1, 5000), Bitmap.Config.ARGB_8888).also { b -> b.eraseColor(android.graphics.Color.WHITE); p.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) }
+                } } }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { error = "Не удалось прочитать страницу ${page + 1}." }
+    }
+    if (error.isNotBlank()) Column(Modifier.fillMaxWidth().padding(16.dp)) { Text(error, color = MaterialTheme.colorScheme.error); TextButton(onClick = { retry++ }) { Text("Повторить") } }
+    else if (textMode) Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Text("Страница ${page + 1}", style = MaterialTheme.typography.labelMedium)
+        if (textError) Text("Не удалось извлечь текст. Переключитесь в PDF.")
+        else if (text == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); Spacer(Modifier.height(160.dp)) }
+        else if (text.isBlank()) Text("Нет извлекаемого текста. Переключитесь в PDF.")
+        else {
+            val highlighted = remember(text, matches) { androidx.compose.ui.text.buildAnnotatedString {
+                append(text)
+                matches.forEach { addStyle(androidx.compose.ui.text.SpanStyle(background = androidx.compose.ui.graphics.Color(0xFFFFE082), color = androidx.compose.ui.graphics.Color.Black), it.offset, it.offset + it.length) }
+            } }
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            var layout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+            LaunchedEffect(jump, layout) {
+                val result = layout
+                if (jump != null && result != null) positioned(result.getLineTop(result.getLineForOffset(jump.offset.coerceIn(0, text.length))).toInt() + with(density) { 42.dp.roundToPx() })
+            }
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(highlighted, fontSize = (18f * zoom / 100).sp, lineHeight = (27f * zoom / 100).sp, onTextLayout = { layout = it })
+            }
+        }
+    } else BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val height = maxWidth * aspect
+        bitmap?.let { Image(it.asImageBitmap(), "Страница ${page + 1}", Modifier.fillMaxWidth().height(height)) }
+            ?: Box(Modifier.fillMaxWidth().height(height), contentAlignment = androidx.compose.ui.Alignment.Center) { CircularProgressIndicator() }
     }
 }
