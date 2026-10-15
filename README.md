@@ -7,9 +7,9 @@
 
 Простое приложение для Android, которое помогает хранить назначения врача, планировать посещения и получать напоминания. Интерфейс на русском языке, с крупными элементами и компоновкой, которая учитывает ширину экрана.
 
-**Android 13 и новее · Kotlin · Jetpack Compose · Material 3 · Версия в исходниках 0.6.0**
+**Android 13 и новее · Kotlin · Jetpack Compose · Material 3 · Версия 0.6.0**
 
-**[Скачать APK 0.5.1](https://github.com/mykolaq/care-notes/releases/download/v0.5.1/care-notes-0.5.1.apk)** · [Описание релиза](https://github.com/mykolaq/care-notes/releases/tag/v0.5.1) · [Настройка семейного сервера](server/README.md)
+**[Скачать APK 0.6.0](https://github.com/mykolaq/care-notes/releases/download/v0.6.0/care-notes-0.6.0.apk)** · [Описание релиза](https://github.com/mykolaq/care-notes/releases/tag/v0.6.0) · [Настройка семейного сервера](server/README.md)
 
 Основные функции работают без регистрации и интернета. Семейная синхронизация и обращение к внешним сервисам включаются по желанию.
 
@@ -129,7 +129,7 @@
 
 ## Установка и обновление
 
-1. На телефоне с Android 13 или новее скачать [care-notes-0.5.1.apk](https://github.com/mykolaq/care-notes/releases/download/v0.5.1/care-notes-0.5.1.apk).
+1. На телефоне с Android 13 или новее скачать [care-notes-0.6.0.apk](https://github.com/mykolaq/care-notes/releases/download/v0.6.0/care-notes-0.6.0.apk).
 2. Открыть APK и разрешить установку из используемого браузера или файлового менеджера, если Android попросит.
 3. Установить приложение и разрешить уведомления. Для точного времени включить «Будильники и напоминания» в системных настройках.
 
