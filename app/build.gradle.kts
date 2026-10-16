@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "com.carenotes.app"
     compileSdk = 36
-    defaultConfig { applicationId = "com.carenotes.app"; minSdk = 33; targetSdk = 36; versionCode = 10; versionName = "0.7.0" }
+    defaultConfig { applicationId = "com.carenotes.app"; minSdk = 33; targetSdk = 36; versionCode = 11; versionName = "0.7.1" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }

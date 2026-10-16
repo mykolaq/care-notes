@@ -228,9 +228,12 @@ internal class Instructions(private val context: Context) {
     var sectionsOpen by remember { mutableStateOf(false) }
     var matchIndex by remember { mutableIntStateOf(0) }
     var pendingJump by remember { mutableStateOf<InstructionLocation?>(null) }
+    val speech = rememberInstructionSpeech(file, pages)
+    var speechSelection by remember(file) { mutableStateOf<InstructionLocation?>(null) }
     val matches = remember(pages, query) { instructionMatches(pages.orEmpty(), query) }
     val sections = remember(pages) { instructionSections(pages.orEmpty()) }
     fun jump(location: InstructionLocation) {
+        speechSelection = location
         textMode = true
         prefs.edit().putBoolean("textMode", true).apply()
         pendingJump = location
@@ -306,6 +309,7 @@ internal class Instructions(private val context: Context) {
                     IconButton(onClick = { zoom = (zoom + 10).coerceAtMost(300) }, enabled = zoom < 300) { Icon(androidx.compose.material.icons.Icons.Outlined.Add, "Увеличить масштаб") }
                     TextButton(onClick = { scope.launch { scroll.animateScrollToItem(0) } }, enabled = scroll.firstVisibleItemIndex > 0) { Text("В начало") }
                 }
+                InstructionSpeechControls(speech, pages, speechSelection?.takeIf { it.page == scroll.firstVisibleItemIndex } ?: InstructionLocation(scroll.firstVisibleItemIndex, 0), speechSelection?.page == scroll.firstVisibleItemIndex, ocrPages.isNotEmpty())
                 if (textMode) Text("Текст можно выделить и скопировать. Таблицы сверяйте с PDF.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
                 val unreadable = pages.orEmpty().indices.filter { it !in ocrPages && instructionNeedsOcr(pages!![it]) }
                 if (unreadable.isNotEmpty() || ocrJob != null || ocrError.isNotBlank()) Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
