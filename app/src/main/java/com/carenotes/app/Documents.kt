@@ -20,36 +20,42 @@ class Documents(private val context: Context) {
     private val directory = File(context.filesDir, "documents").apply { mkdirs() }
     fun all(): List<VisitDocument> {
         val a = JSONArray(prefs.getString("documents", "[]"))
-        return (0 until a.length()).map { i -> a.getJSONObject(i).let { VisitDocument(it.getString("id"), it.getString("visitId"), it.getString("name"), it.getString("mime"), it.getString("fileName"), it.optString("text")) } }
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { VisitDocument(it.getString("id"), it.optString("visitId"), it.getString("name"), it.getString("mime"), it.getString("fileName"), it.optString("text"), it.optString("studyId")) } }
     }
     private fun save(items: List<VisitDocument>) {
         val a = JSONArray()
-        items.forEach { a.put(JSONObject().put("id", it.id).put("visitId", it.visitId).put("name", it.name).put("mime", it.mime).put("fileName", it.fileName).put("text", it.text)) }
+        items.forEach { a.put(JSONObject().put("id", it.id).put("visitId", it.visitId).put("name", it.name).put("mime", it.mime).put("fileName", it.fileName).put("text", it.text).put("studyId", it.studyId)) }
         prefs.edit().putString("documents", a.toString()).commit(); FamilySync.async(context)
     }
     fun file(d: VisitDocument) = File(directory, d.fileName)
     fun uri(d: VisitDocument): Uri = FileProvider.getUriForFile(context, "${context.packageName}.documents", file(d))
-    fun add(uri: Uri, visitId: String): VisitDocument {
+    fun add(uri: Uri, visitId: String = "", studyId: String = ""): VisitDocument {
+        require((visitId.isNotEmpty()) xor (studyId.isNotEmpty())) { "У документа должна быть одна запись-владелец" }
         val resolver = context.contentResolver
         val mime = resolver.getType(uri) ?: "image/jpeg"
         require(mime == "application/pdf" || mime.startsWith("image/")) { "Выберите фотографию или PDF." }
         var name = "Документ"
         resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if(c.moveToFirst()) name = c.getString(0) ?: name }
         val id = UUID.randomUUID().toString()
-        val d = VisitDocument(id, visitId, name.take(160), mime, "$id.${if (mime == "application/pdf") "pdf" else "image"}")
+        val d = VisitDocument(id, visitId, name.take(160), mime, "$id.${if (mime == "application/pdf") "pdf" else "image"}", studyId = studyId)
         try {
             resolver.openInputStream(uri)?.use { input -> file(d).outputStream().use { output ->
                 val buffer = ByteArray(8192); var total = 0L
                 while(true) { val count = input.read(buffer); if(count < 0) break; total += count; require(total <= 25L * 1024 * 1024) { "Документ больше 25 МБ. Выберите файл поменьше." }; output.write(buffer, 0, count) }
                 require(total > 0) { "Файл пуст." }
             } } ?: error("Не удалось открыть файл.")
-            synchronized(FamilySync.localGuard) { save(all() + d) }
+            synchronized(FamilySync.localGuard) {
+                check(FamilySync(context).editable) { "Доступ только для просмотра" }
+                require(validDocumentOwner(visitId, studyId, Store(context).visits().map { it.id }.toSet(), StudyStore(context).all().map { it.id }.toSet())) { "Запись уже удалена" }
+                save(all() + d)
+            }
             return d
         } catch (e: Exception) { file(d).delete(); throw e }
     }
     fun updateText(d: VisitDocument, text: String): VisitDocument = d.copy(text = text.take(50000)).also { next -> synchronized(FamilySync.localGuard) { save(all().map { if(it.id == d.id) next else it }) } }
     fun delete(d: VisitDocument) = synchronized(FamilySync.localGuard) { save(all().filterNot { it.id == d.id }); file(d).delete(); Unit }
     fun deleteVisit(id: String) { all().filter { it.visitId == id }.forEach(::delete) }
+    fun deleteStudy(id: String) { all().filter { it.studyId == id }.forEach(::delete) }
     fun cameraFile(): File = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "${UUID.randomUUID()}.jpg") }
     fun cameraUri(file: File): Uri = FileProvider.getUriForFile(context, "${context.packageName}.documents", file)
     fun recognize(d: VisitDocument): String {

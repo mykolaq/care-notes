@@ -205,7 +205,7 @@ internal class Instructions(private val context: Context) {
     }
 }
 
-@Composable private fun InstructionReader(file: File, name: String, dismiss: () -> Unit) {
+@Composable internal fun InstructionReader(file: File, name: String, dismiss: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("instruction_reader", Context.MODE_PRIVATE) }
     val positionKey = remember(file) { file.nameWithoutExtension }
@@ -267,7 +267,7 @@ internal class Instructions(private val context: Context) {
             }
             if (scroll.firstVisibleItemIndex >= sizes.size) scroll.scrollToItem(0)
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (_: Exception) { error = "Не удалось открыть PDF. Попробуйте сохранить инструкцию заново." }
+        catch (_: Exception) { error = "Не удалось открыть PDF. Попробуйте прикрепить или скачать документ заново." }
     }
     LaunchedEffect(scroll, sizes) {
         snapshotFlow { scroll.firstVisibleItemIndex }.collect { page -> if (sizes.isNotEmpty()) prefs.edit().putInt(positionKey, page).apply() }
@@ -277,9 +277,9 @@ internal class Instructions(private val context: Context) {
             Column {
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text(name, Modifier.weight(1f), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                    IconButton(onClick = { searching = !searching; if (!searching) query = "" }) { Icon(androidx.compose.material.icons.Icons.Outlined.Search, "Поиск по инструкции") }
-                    IconButton(onClick = { sectionsOpen = true }) { Icon(androidx.compose.material.icons.Icons.AutoMirrored.Outlined.List, "Разделы инструкции") }
-                    IconButton(onClick = dismiss) { Icon(androidx.compose.material.icons.Icons.Outlined.Close, "Закрыть инструкцию") }
+                    IconButton(onClick = { searching = !searching; if (!searching) query = "" }) { Icon(androidx.compose.material.icons.Icons.Outlined.Search, "Поиск по документу") }
+                    IconButton(onClick = { sectionsOpen = true }) { Icon(androidx.compose.material.icons.Icons.AutoMirrored.Outlined.List, "Разделы документа") }
+                    IconButton(onClick = dismiss) { Icon(androidx.compose.material.icons.Icons.Outlined.Close, "Закрыть документ") }
                 }
                 if (searching) {
                     OutlinedTextField(query, { query = it }, label = { Text("Найти слово или фразу") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
@@ -336,7 +336,7 @@ internal class Instructions(private val context: Context) {
                     }
                     if (ocrError.isNotBlank()) Text(ocrError, color = MaterialTheme.colorScheme.error)
                 }
-                if (ocrPages.isNotEmpty()) Text("Текст распознан из изображения (${ocrPages.size} стр.). Возможны ошибки — сверяйте названия и дозировки с оригиналом PDF.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
+                if (ocrPages.isNotEmpty()) Text("Текст распознан из изображения (${ocrPages.size} стр.). Возможны ошибки — сверяйте названия, числа и единицы с оригиналом PDF.", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
                 if (error.isNotBlank()) { Text(error, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error); TextButton(onClick = { retry++ }) { Text("Повторить") } }
                 else if (sizes.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -362,7 +362,7 @@ internal class Instructions(private val context: Context) {
             }
         }
     }
-    if (sectionsOpen) FormDialog("Разделы инструкции", { sectionsOpen = false }) {
+    if (sectionsOpen) FormDialog("Разделы документа", { sectionsOpen = false }) {
         Text("Разделы найдены по заголовкам в документе. Нажмите, чтобы перейти к тексту.")
         when {
             pages == null && !textError -> { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Собираю оглавление…") }

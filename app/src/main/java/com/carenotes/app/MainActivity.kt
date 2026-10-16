@@ -152,14 +152,13 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
     LaunchedEffect(openedMedicine) { if (openedMedicine != null) { tab = 0; medicineEdit = prescriptions.firstOrNull { it.id == openedMedicine }; medicineForm = canEdit && medicineEdit != null; consumed() } }
     fun saveVisits(next: List<Visit>) { visits = next; store.saveVisits(next) }
     Scaffold(containerColor = Paper, bottomBar = {
-        NavigationBar(containerColor = Color.White) {
-            listOf("Назначения", "Посещения", "Календарь").forEachIndexed { index, label -> NavigationBarItem(selected = tab == index, onClick = { tab = index }, icon = { Icon(when (index) { 0 -> Icons.Outlined.Medication; 1 -> Icons.Outlined.EventNote; else -> Icons.Outlined.CalendarMonth }, null) }, label = { NavigationLabel(label) }) }
-        }
+        CareNavigation(tab) { tab = it }
     }, floatingActionButton = {
-        if (canEdit) ExtendedFloatingActionButton(onClick = { if (tab == 0) { medicineEdit = null; medicineForm = true } else { visitEdit = null; visitForm = true } }, containerColor = Green, contentColor = Color.White, icon = { Icon(Icons.Outlined.Add, null) }, text = { Text(if (tab == 0) "Назначение" else "Посещение", fontSize = 16.sp) })
+        if (canEdit && tab != 3) ExtendedFloatingActionButton(onClick = { if (tab == 0) { medicineEdit = null; medicineForm = true } else { visitEdit = null; visitForm = true } }, containerColor = Green, contentColor = Color.White, icon = { Icon(Icons.Outlined.Add, null) }, text = { Text(if (tab == 0) "Назначение" else "Посещение", fontSize = 16.sp) })
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
-            LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), state = listState, contentPadding = PaddingValues(start = LocalContentPadding.current, end = LocalContentPadding.current, top = 16.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (tab == 3) StudySection(activity, canEdit, { familyVisible = true }, { securityVisible = true })
+            else LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), state = listState, contentPadding = PaddingValues(start = LocalContentPadding.current, end = LocalContentPadding.current, top = 16.dp, bottom = 110.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("МОЁ ЗДОРОВЬЕ", color = Green, fontSize = 12.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -312,22 +311,28 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
     if (promptVisible) PromptDialog(activity, prescriptions) { promptVisible = false }
 }
 
-// Fit complete navigation words without disabling the system font scale.
-@Composable private fun NavigationLabel(label: String) {
+// Keep complete labels at the user's font scale. Narrow windows get two rows.
+@Composable private fun CareNavigation(selected: Int, select: (Int) -> Unit) {
+    val labels = listOf("Назначения", "Посещения", "Календарь", "Исследования")
+    val icons = listOf(Icons.Outlined.Medication, Icons.Outlined.EventNote, Icons.Outlined.CalendarMonth, Icons.Outlined.Science)
     val measurer = rememberTextMeasurer()
-    val baseStyle = LocalTextStyle.current.copy(fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.sp)
-    BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        val fittedStyle = remember(baseStyle, constraints.maxWidth, measurer) {
-            var size = 12f
-            var candidate = baseStyle
-            val labels = listOf("Назначения", "Посещения", "Календарь")
-            while (size > 1f && labels.any { measurer.measure(it, style = candidate, softWrap = false, maxLines = 1).size.width > constraints.maxWidth - 2 }) {
-                size -= 0.25f
-                candidate = baseStyle.copy(fontSize = size.sp)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, letterSpacing = 0.sp)
+    Surface(color = Color.White, tonalElevation = 2.dp) {
+        BoxWithConstraints(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.navigationBars)) {
+            val widest = labels.maxOf { measurer.measure(it, style = style, maxLines = 1, softWrap = false).size.width }
+            val inset = with(density) { 12.dp.toPx() }
+            val columns = if (widest <= constraints.maxWidth / 4 - inset) 4 else if (widest <= constraints.maxWidth / 2 - inset) 2 else 1
+            Column {
+                labels.indices.chunked(columns).forEach { row ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = if (columns == 4) 80.dp else 68.dp)) {
+                        row.forEach { index ->
+                            NavigationBarItem(selected = selected == index, onClick = { select(index) }, icon = { Icon(icons[index], null) }, label = { Text(labels[index], style = style, maxLines = 1, softWrap = false) })
+                        }
+                    }
+                }
             }
-            candidate
         }
-        Text(label, style = fittedStyle, maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
     }
 }
 
@@ -394,7 +399,7 @@ private fun CareApp(activity: MainActivity, openedVisit: String?, openedMedicine
 }
 
 @Composable internal fun Field(label: String, value: String, changed: (String) -> Unit, singleLine: Boolean = true) { OutlinedTextField(value = value, onValueChange = changed, label = { Text(label, style = MaterialTheme.typography.bodyMedium) }, modifier = Modifier.fillMaxWidth(), singleLine = singleLine, placeholder = if (label == "Дозировка") ({ Text("Например, 5 мг") }) else null, shape = RoundedCornerShape(14.dp)) }
-@Composable private fun DateField(context: Context, label: String, date: LocalDate?, change: (LocalDate) -> Unit) {
+@Composable internal fun DateField(context: Context, label: String, date: LocalDate?, change: (LocalDate) -> Unit) {
     OutlinedButton(onClick = { val d = date ?: LocalDate.now(); DatePickerDialog(context, { _, y, m, day -> change(LocalDate.of(y, m + 1, day)) }, d.year, d.monthValue - 1, d.dayOfMonth).show() }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("$label: ${date?.format(dateFormat) ?: "выбрать"}") }
 }
 @Composable internal fun CheckRow(label: String, checked: Boolean, change: (Boolean) -> Unit) {

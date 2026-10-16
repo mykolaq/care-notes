@@ -2,7 +2,7 @@ package com.carenotes.app
 
 import java.time.LocalDate
 
-data class VisitDocument(val id: String, val visitId: String, val name: String, val mime: String, val fileName: String, val text: String = "")
+data class VisitDocument(val id: String, val visitId: String, val name: String, val mime: String, val fileName: String, val text: String = "", val studyId: String = "")
 
 /** Only explicit dose and duration are copied. The user chooses lines and reviews every draft. */
 fun documentDraft(line: String, visit: Visit, documentName: String): Prescription {

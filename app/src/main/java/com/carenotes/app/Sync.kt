@@ -135,7 +135,7 @@ internal class FamilySync(private val context: Context) {
         else -> value.toString()
     }
     private fun records(json: JSONObject): Map<String,String> = buildMap {
-        listOf("prescriptions", "visits", "documents").forEach { type ->
+        listOf("prescriptions", "visits", "studies", "documents").forEach { type ->
             val array = json.optJSONArray(type) ?: JSONArray()
             require(array.length() <= 10000)
             for (i in 0 until array.length()) {
@@ -148,11 +148,11 @@ internal class FamilySync(private val context: Context) {
             }
         }
     }
-    private fun snapshot(map: Map<String,String>): JSONObject = JSONObject().put("format", 1).apply {
-        listOf("prescriptions", "visits", "documents").forEach { type -> put(type, JSONArray(map.filterKeys { it.startsWith("$type/") }.values.map { JSONObject(it) })) }
+    private fun snapshot(map: Map<String,String>): JSONObject = JSONObject().put("format", 2).apply {
+        listOf("prescriptions", "visits", "studies", "documents").forEach { type -> put(type, JSONArray(map.filterKeys { it.startsWith("$type/") }.values.map { JSONObject(it) })) }
     }
     private fun local(): JSONObject = synchronized(localGuard) { JSONObject().put("prescriptions", JSONArray(data.getString("prescriptions", "[]")))
-        .put("visits", JSONArray(data.getString("visits", "[]"))).put("documents", JSONArray(docs.getString("documents", "[]"))) }
+        .put("studies", JSONArray(data.getString("studies", "[]"))).put("visits", JSONArray(data.getString("visits", "[]"))).put("documents", JSONArray(docs.getString("documents", "[]"))) }
     private fun docName(json: JSONObject): String {
         val name = json.getString("fileName")
         require(name.matches(Regex("[a-zA-Z0-9-]{1,80}\\.(pdf|image)"))) { "Неверное имя документа" }
@@ -199,7 +199,7 @@ internal class FamilySync(private val context: Context) {
                 require(seen.add(entry.name))
                 if (entry.name == "data.json") {
                     val bytes = zip.readNBytes(2*1024*1024 + 1); require(bytes.size <= 2*1024*1024)
-                    manifest = JSONObject(String(bytes, Charsets.UTF_8)); require(manifest.getInt("format") == 1)
+                    manifest = JSONObject(String(bytes, Charsets.UTF_8)); require(manifest.getInt("format") in 1..2) { "Обновите приложение для чтения новой версии данных" }
                 } else {
                     require(entry.name.matches(Regex("documents/[a-zA-Z0-9-]{1,80}\\.(pdf|image)")) || (entry.name.startsWith("photos/") && validMedicinePhotoName(entry.name.removePrefix("photos/")))) { "Неверный путь документа" }
                     val file = File(dir, entry.name.substringAfter('/'))
@@ -214,9 +214,10 @@ internal class FamilySync(private val context: Context) {
         validateSnapshot(json)
         val array = json.getJSONArray("documents")
         val visits = (0 until json.getJSONArray("visits").length()).map { json.getJSONArray("visits").getJSONObject(it).getString("id") }.toSet()
+        val studies = parseStudies(json.optJSONArray("studies") ?: JSONArray()).map { it.id }.toSet()
         for (i in 0 until array.length()) {
             val record = array.getJSONObject(i)
-            require(record.getString("visitId") in visits)
+            require(validDocumentOwner(record.optString("visitId"), record.optString("studyId"), visits, studies))
             require(File(dir, docName(record)).isFile) { "Документ отсутствует в архиве" }
         }
         for (name in photoNames(json)) MedicinePhotos(context).validate(File(dir, name))
@@ -240,10 +241,15 @@ internal class FamilySync(private val context: Context) {
             val base = records(JSONObject(prefs.getString("base", "{}")!!))
             val merged = if(c.role == "viewer") remoteMap else SyncMerge.merge(base, localMap, remoteMap, choice)
             val json = snapshot(merged)
-            // Document deletion wins over orphan metadata when a visit is removed elsewhere.
+            // Owner deletion wins over orphan document metadata.
             val visitIds = merged.keys.filter { it.startsWith("visits/") }.map { it.substringAfter('/') }.toSet()
+            val studyIds = merged.keys.filter { it.startsWith("studies/") }.map { it.substringAfter('/') }.toSet()
             val documents = json.getJSONArray("documents")
-            for (i in documents.length()-1 downTo 0) if (documents.getJSONObject(i).getString("visitId") !in visitIds) documents.remove(i)
+            for (i in documents.length()-1 downTo 0) {
+                val d = documents.getJSONObject(i)
+                require(d.optString("visitId").isEmpty() xor d.optString("studyId").isEmpty()) { "У документа должна быть одна запись-владелец" }
+                if (!validDocumentOwner(d.optString("visitId"), d.optString("studyId"), visitIds, studyIds)) documents.remove(i)
+            }
             validateSnapshot(json)
             val resultMap = records(json)
             if (c.role != "viewer" && resultMap != remoteMap) {
@@ -267,11 +273,16 @@ internal class FamilySync(private val context: Context) {
         } finally { workspace.deleteRecursively() }
     }
     private fun validateSnapshot(json: JSONObject) {
+        val studies = parseStudies(json.optJSONArray("studies") ?: JSONArray())
+        val studyIds = studies.map { it.id }.toSet()
+        val visitArray = json.getJSONArray("visits")
+        val visitIds = (0 until visitArray.length()).map { visitArray.getJSONObject(it).getString("id") }.toSet()
         Store(context).validateSync(json.getJSONArray("prescriptions"), json.getJSONArray("visits"))
         val names = mutableSetOf<String>()
         val array = json.getJSONArray("documents")
         for (i in 0 until array.length()) {
             val d = array.getJSONObject(i)
+            require(validDocumentOwner(d.optString("visitId"), d.optString("studyId"), visitIds, studyIds)) { "Не найдена запись для документа" }
             require(names.add(docName(d))) { "Повторяющийся файл документа" }
             require(d.getString("name").length <= 500 && d.optString("text").length <= 50000)
             require(d.getString("mime") == "application/pdf" || d.getString("mime").startsWith("image/"))
@@ -318,11 +329,12 @@ internal class FamilySync(private val context: Context) {
         }
         // Parser validation and rollback are handled by Store.validateSync below.
         Store(context).validateSync(ps, vs)
+        parseStudies(json.optJSONArray("studies") ?: JSONArray())
         val array = json.getJSONArray("documents")
         val store = Store(context)
         store.prescriptions().forEach { MedicineReminders.cancel(context, it) }; store.visits().forEach { Reminders.cancel(context, it) }
         check(docs.edit().putString("documents", array.toString()).commit())
-        check(data.edit().putString("prescriptions", ps.toString()).putString("visits", vs.toString()).commit())
+        check(data.edit().putString("prescriptions", ps.toString()).putString("visits", vs.toString()).putString("studies", (json.optJSONArray("studies") ?: JSONArray()).toString()).commit())
         Reminders.restore(context)
     }
     companion object {
